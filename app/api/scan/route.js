@@ -117,10 +117,6 @@ export async function POST(request) {
         operator_name: operator
       });
     
-    // Force stats refresh by invalidating cache
-    await supabase
-      .rpc('refresh_stats_cache');
-    
     return NextResponse.json({
       success: true,
       attendee: updatedAttendee,
@@ -128,14 +124,7 @@ export async function POST(request) {
       message: `${scanType === 'check_in' ? 'Checked in' : 'Checked out'} successfully`
     });
     
-  } 
-    // Refresh the materialized view after scan
-    try {
-      await supabase.rpc('refresh_attendees_stats');
-    } catch (refreshError) {
-      console.log('Could not refresh stats view, but scan was successful:', refreshError.message);
-    }
-    catch (error) {
+  } catch (error) {
     console.error('Scan error:', error);
     return NextResponse.json(
       { error: error.message },
