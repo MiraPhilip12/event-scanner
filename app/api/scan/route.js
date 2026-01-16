@@ -9,8 +9,6 @@ export async function POST(request) {
   try {
     const { qrPayload, scanType, deviceId, operator } = await request.json();
     
-    console.log('Scan received:', { qrPayload, scanType, operator });
-    
     // Find attendee
     const { data: attendee, error: findError } = await supabase
       .from('attendees')
@@ -25,42 +23,26 @@ export async function POST(request) {
       );
     }
     
-    // VALIDATION LOGIC
+    // Validation
     if (scanType === 'check_in') {
-      // Prevent duplicate check-in
       if (attendee.status === 'checked_in') {
         return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Already checked in',
-            attendee: attendee
-          },
+          { error: 'Already checked in' },
           { status: 400 }
         );
       }
-      
-      // Prevent checking in if already checked out
       if (attendee.status === 'checked_out') {
         return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Already checked out. Cannot check in again.',
-            attendee: attendee
-          },
+          { error: 'Already checked out' },
           { status: 400 }
         );
       }
     }
     
     if (scanType === 'check_out') {
-      // Must be checked in to check out
       if (attendee.status !== 'checked_in') {
         return NextResponse.json(
-          { 
-            success: false, 
-            error: `Cannot check out. Current status: ${attendee.status || 'not checked in'}`,
-            attendee: attendee
-          },
+          { error: 'Not checked in' },
           { status: 400 }
         );
       }
@@ -75,7 +57,6 @@ export async function POST(request) {
     if (scanType === 'check_in') {
       updateData.check_in_time = new Date().toISOString();
       updateData.status = 'checked_in';
-      updateData.check_out_time = null; // Reset checkout if exists
     } else if (scanType === 'check_out') {
       updateData.check_out_time = new Date().toISOString();
       updateData.status = 'checked_out';
@@ -89,25 +70,9 @@ export async function POST(request) {
       .select()
       .single();
     
-    if (updateError) {
-      console.error('Update error:', updateError);
-      
-      // Handle duplicate check-in error
-      if (updateError.code === '23505') {
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Already checked in (duplicate prevented)',
-            attendee: attendee
-          },
-          { status: 400 }
-        );
-      }
-      
-      throw updateError;
-    }
+    if (updateError) throw updateError;
     
-    // Create scan log
+    // Create log
     await supabase
       .from('scan_logs')
       .insert({
@@ -120,8 +85,7 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       attendee: updatedAttendee,
-      action: scanType,
-      message: `${scanType === 'check_in' ? 'Checked in' : 'Checked out'} successfully`
+      action: scanType
     });
     
   } catch (error) {

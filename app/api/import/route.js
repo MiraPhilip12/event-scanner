@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
 
-// Create Supabase client directly
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -24,18 +23,14 @@ export async function POST(request) {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(sheet);
     
-    console.log('Excel data loaded:', data.length, 'rows');
-    
     const attendees = data.map(row => ({
       name: row.Name || row.name || '',
       phone: row.Phone || row.phone || '',
-      qr_payload: row['QR Payload'] || row.qr_payload || row['QR Payload'.toLowerCase()] || '',
-      seat_id: row.SeatID || row.seat_id || row.SeatID?.toString() || '',
+      qr_payload: row['QR Payload'] || row.qr_payload || '',
+      seat_id: row.SeatID || row.seat_id || '',
       category: row.Category || row.category || '',
       status: 'not_checked_in'
     })).filter(attendee => attendee.qr_payload);
-    
-    console.log('Processed attendees:', attendees.length);
     
     // Upsert attendees
     const { error } = await supabase
@@ -45,15 +40,11 @@ export async function POST(request) {
         ignoreDuplicates: false
       });
     
-    if (error) {
-      console.error('Supabase error:', error);
-      throw error;
-    }
+    if (error) throw error;
     
     return NextResponse.json({
       success: true,
-      imported: attendees.length,
-      message: 'Data imported successfully'
+      imported: attendees.length
     });
     
   } catch (error) {
