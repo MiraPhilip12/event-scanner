@@ -1,185 +1,138 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 export async function POST(request) {
   try {
-    const { qrPayload, scanType, deviceId, operator } = await request.json();
-    
-    console.log('📱 Scan attempt:', { qrPayload, scanType, operator });
-    
-    // Find attendee
-    const { data: attendee, error: findError } = await supabase
+    // 🔐 Create Supabase client INSIDE handler (build-safe)
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    const body = await request.json();
+    const { qrPayload, deviceId, operatorName } = body;
+
+    if (!qrPayload) {
+      return NextResponse.json(
+        { success: false, error: 'QR payload is required' },
+        { status: 400 }
+      );
+    }
+
+    // 1️⃣ Fetch attendee by QR
+    const { data: attendee, error: fetchError } = await supabase
       .from('attendees')
       .select('*')
       .eq('qr_payload', qrPayload)
       .single();
-    
-    if (findError || !attendee) {
-      console.log('❌ Attendee not found:', qrPayload);
+
+    if (fetchError || !attendee) {
       return NextResponse.json(
-        { 
-          success: false,
-          error: 'Attendee not found in database' 
-        },
+        { success: false, error: 'Invalid or unknown ticket' },
         { status: 404 }
       );
     }
-    
-    console.log('👤 Found attendee:', attendee.name, 'Status:', attendee.status);
-    
-    // VALIDATION LOGIC
-    if (scanType === 'check_in') {
-      // Prevent duplicate check-in
-      if (attendee.status === 'checked_in') {
-        console.log('❌ Already checked in:', attendee.name);
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: `${attendee.name} is already checked in`,
-            attendee: attendee
-          },
-          { status: 400 }
-        );
-      }
-      
-      // Prevent checking in if already checked out
-      if (attendee.status === 'checked_out') {
-        console.log('❌ Already checked out:', attendee.name);
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: `${attendee.name} has already checked out. Cannot check in again.`,
-            attendee: attendee
-          },
-          { status: 400 }
-        );
-      }
-    }
-    
-    if (scanType === 'check_out') {
-      console.log('🔍 Check-out validation:', {
-        name: attendee.name,
-        currentStatus: attendee.status,
-        checkInTime: attendee.check_in_time,
-        checkOutTime: attendee.check_out_time
-      });
-      
-      // Must be checked in to check out
-      if (attendee.status !== 'checked_in') {
-        console.log('❌ Cannot check out - status is:', attendee.status);
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: `Cannot check out ${attendee.name}. Current status: ${attendee.status || 'not checked in'}`,
-            attendee: attendee
-          },
-          { status: 400 }
-        );
-      }
-      
-      // Additional safety: must have check_in_time
-      if (!attendee.check_in_time) {
-        console.log('❌ No check-in time found');
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: `Cannot check out ${attendee.name}. No check-in time recorded.`,
-            attendee: attendee
-          },
-          { status: 400 }
-        );
-      }
-    }
-    
+
     let updateData = {
-      last_scanned_by: operator,
-      device_id: deviceId,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      device_id: deviceId || null,
+      last_scanned_by: operatorName || null
     };
-    
-    if (scanType === 'check_in') {
-      updateData.check_in_time = new Date().toISOString();
+
+    let scanType = null;
+
+    // 2️⃣ Decide action BASED ON CURRENT STATUS
+    if (attendee.status === 'not_checked_in') {
+      // ✅ CHECK IN
       updateData.status = 'checked_in';
-      updateData.check_out_time = null; // Clear any previous checkout
-      console.log('✅ Check-in update data:', updateData);
-    } else if (scanType === 'check_out') {
-      updateData.check_out_time = new Date().toISOString();
+      updateData.check_in_time = new Date().toISOString();
+      updateData.check_out_time = null;
+      scanType = 'check_in';
+
+    } else if (attendee.status === 'checked_in') {
+      // ✅ CHECK OUT
       updateData.status = 'checked_out';
-      console.log('✅ Check-out update data:', updateData);
+      updateData.check_out_time = new Date().toISOString();
+      scanType = 'check_out';
+
+    } else {
+      // ❌ Already checked out
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Ticket already checked out',
+          attendee
+        },
+        { status: 409 }
+      );
     }
-    
-    // Update attendee
+
+    // 3️⃣ Update attendee
     const { data: updatedAttendee, error: updateError } = await supabase
       .from('attendees')
       .update(updateData)
       .eq('id', attendee.id)
       .select()
       .single();
-    
+
     if (updateError) {
-      console.error('❌ Database update error:', updateError);
-      
-      // Handle duplicate check-in error
+      // Constraint safety
       if (updateError.code === '23505') {
         return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Already checked in (database constraint prevented)',
-            attendee: attendee
-          },
-          { status: 400 }
+          { success: false, error: 'Duplicate scan detected' },
+          { status: 409 }
         );
       }
-      
-      // Handle check constraint violation
+
       if (updateError.code === '23514') {
         return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Invalid status transition. Please check attendee current status.',
-            attendee: attendee
-          },
+          { success: false, error: 'Invalid status transition' },
           { status: 400 }
         );
       }
-      
+
       throw updateError;
     }
-    
-    console.log('✅ Database update successful:', updatedAttendee.name, 'New status:', updatedAttendee.status);
-    
-    // Create scan log
+
+    // 4️⃣ Insert scan log (non-fatal)
     const { error: logError } = await supabase
       .from('scan_logs')
       .insert({
         attendee_id: attendee.id,
         scan_type: scanType,
-        device_id: deviceId,
-        operator_name: operator
+        device_id: deviceId || null,
+        operator_name: operatorName || null
       });
-    
+
     if (logError) {
-      console.error('⚠️ Log error (non-fatal):', logError);
+      console.warn('Scan log failed:', logError.message);
     }
-    
+
+    // 5️⃣ Refresh stats view (non-blocking)
+    try {
+      await supabase.rpc('refresh_attendees_stats');
+    } catch (refreshError) {
+      console.warn(
+        'Stats refresh failed (non-fatal):',
+        refreshError.message
+      );
+    }
+
+    // 6️⃣ Success response
     return NextResponse.json({
       success: true,
-      attendee: updatedAttendee,
       action: scanType,
-      message: `${updatedAttendee.name} ${scanType === 'check_in' ? 'checked in' : 'checked out'} successfully!`
+      attendee: updatedAttendee,
+      message:
+        scanType === 'check_in'
+          ? `${updatedAttendee.name} checked in successfully`
+          : `${updatedAttendee.name} checked out successfully`
     });
-    
+
   } catch (error) {
-    console.error('💥 Scan endpoint error:', error);
+    console.error('Scan API error:', error);
     return NextResponse.json(
-      { 
-        success: false,
-        error: error.message 
-      },
+      { success: false, error: error.message },
       { status: 500 }
     );
   }
