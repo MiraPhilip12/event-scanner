@@ -119,7 +119,8 @@ export default function Home() {
       
       if (data.success) {
         // Play success sound
-        playBeep(scanType === 'check_in' ? 'checkin' : 'checkout');
+        playBeep(mode === 'check_in' ? 'checkin' : 'checkout');
+
         
         // Add to recent scans with proper data
         const newScan = {
@@ -152,7 +153,7 @@ export default function Home() {
         toast.success(
           <div>
             <strong>{data.attendee.name}</strong>
-            <div>{scanType === 'check_in' ? 'Checked IN successfully!' : 'Checked OUT successfully!'}</div>
+            <div>{mode === 'check_in' ? 'Checked IN successfully!' : 'Checked OUT successfully!'}</div>
             <div style={{ fontSize: '12px', opacity: 0.8 }}>
               Seat: {data.attendee.seat_id} • {new Date().toLocaleTimeString()}
             </div>
@@ -458,16 +459,16 @@ export default function Home() {
                 style={{
                   flex: 1,
                   padding: '18px',
-                  backgroundColor: scanType === 'check_in' ? '#27ae60' : '#e0e0e0',
-                  color: scanType === 'check_in' ? 'white' : '#666',
+                  backgroundColor: mode === 'check_in' ? '#27ae60' : '#e0e0e0',
+                  color: mode === 'check_in' ? 'white' : '#666',
                   border: 'none',
                   borderRadius: '10px',
                   fontSize: '16px',
                   fontWeight: 'bold',
                   cursor: 'pointer',
                   transition: 'all 0.3s',
-                  transform: scanType === 'check_in' ? 'scale(1.02)' : 'scale(1)',
-                  boxShadow: scanType === 'check_in' ? '0 4px 15px rgba(39, 174, 96, 0.3)' : 'none'
+                  transform: mode === 'check_in' ? 'scale(1.02)' : 'scale(1)',
+                  boxShadow: mode === 'check_in' ? '0 4px 15px rgba(39, 174, 96, 0.3)' : 'none'
                 }}
               >
                 ✓ CHECK IN
@@ -477,16 +478,16 @@ export default function Home() {
                 style={{
                   flex: 1,
                   padding: '18px',
-                  backgroundColor: scanType === 'check_out' ? '#e74c3c' : '#e0e0e0',
-                  color: scanType === 'check_out' ? 'white' : '#666',
+                  backgroundColor: mode === 'check_out' ? '#e74c3c' : '#e0e0e0',
+                  color: mode === 'check_out' ? 'white' : '#666',
                   border: 'none',
                   borderRadius: '10px',
                   fontSize: '16px',
                   fontWeight: 'bold',
                   cursor: 'pointer',
                   transition: 'all 0.3s',
-                  transform: scanType === 'check_out' ? 'scale(1.02)' : 'scale(1)',
-                  boxShadow: scanType === 'check_out' ? '0 4px 15px rgba(231, 76, 60, 0.3)' : 'none'
+                  transform: mode === 'check_out' ? 'scale(1.02)' : 'scale(1)',
+                  boxShadow: mode === 'check_out' ? '0 4px 15px rgba(231, 76, 60, 0.3)' : 'none'
                 }}
               >
                 ↩ CHECK OUT
@@ -496,25 +497,25 @@ export default function Home() {
             {/* Scanner Status */}
             <div style={{
               padding: '15px',
-              backgroundColor: scanType === 'check_in' ? '#d5f4e6' : '#fadbd8',
+              backgroundColor: mode === 'check_in' ? '#d5f4e6' : '#fadbd8',
               borderRadius: '10px',
               marginBottom: '25px',
-              border: `3px solid ${scanType === 'check_in' ? '#27ae60' : '#e74c3c'}`,
+              border: `3px solid ${mode === 'check_in' ? '#27ae60' : '#e74c3c'}`,
               textAlign: 'center'
             }}>
               <div style={{ 
                 fontSize: '18px', 
                 fontWeight: 'bold',
-                color: scanType === 'check_in' ? '#27ae60' : '#e74c3c'
+                color: mode === 'check_in' ? '#27ae60' : '#e74c3c'
               }}>
-                {scanType === 'check_in' ? 'CHECK IN MODE' : 'CHECK OUT MODE'}
+                {mode === 'check_in' ? 'CHECK IN MODE' : 'CHECK OUT MODE'}
               </div>
               <div style={{ 
                 fontSize: '14px', 
                 color: '#7f8c8d',
                 marginTop: '5px'
               }}>
-                {scanType === 'check_in' 
+                {mode === 'check_in' 
                   ? 'Scan tickets for event entry' 
                   : 'Scan tickets for event exit'}
               </div>
@@ -716,7 +717,7 @@ export default function Home() {
                         padding: '20px',
                         backgroundColor: '#f8f9fa',
                         borderRadius: '12px',
-                        borderLeft: `6px solid ${scan.scanType === 'check_in' ? '#27ae60' : '#e74c3c'}`,
+                        borderLeft: `6px solid ${scan.mode === 'check_in' ? '#27ae60' : '#e74c3c'}`,
                         transition: 'all 0.2s',
                         cursor: 'pointer',
                         ':hover': {
@@ -740,7 +741,7 @@ export default function Home() {
                             <div style={{
                               width: '40px',
                               height: '40px',
-                              backgroundColor: scan.scanType === 'check_in' ? '#27ae60' : '#e74c3c',
+                              backgroundColor: scan.mode === 'check_in' ? '#27ae60' : '#e74c3c',
                               borderRadius: '50%',
                               display: 'flex',
                               alignItems: 'center',
@@ -763,13 +764,13 @@ export default function Home() {
                                 {scan.name}
                                 <span style={{
                                   padding: '4px 10px',
-                                  backgroundColor: scan.scanType === 'check_in' ? '#27ae60' : '#e74c3c',
+                                  backgroundColor: scan.mode === 'check_in' ? '#27ae60' : '#e74c3c',
                                   color: 'white',
                                   borderRadius: '12px',
                                   fontSize: '11px',
                                   fontWeight: 'bold'
                                 }}>
-                                  {scan.scanType === 'check_in' ? 'IN' : 'OUT'}
+                                  {scan.mode === 'check_in' ? 'IN' : 'OUT'}
                                 </span>
                               </div>
                               <div style={{ 
