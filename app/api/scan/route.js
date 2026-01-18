@@ -9,7 +9,7 @@ export async function POST(request) {
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
-      throw new Error('Supabase environment variables are missing');
+      throw new Error('Supabase environment variables missing');
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -27,20 +27,18 @@ export async function POST(request) {
     }
 
     // 1️⃣ Fetch attendee
-    const fetchResult = await supabase
+    const { data: attendee, error } = await supabase
       .from('attendees')
       .select('*')
       .eq('qr_payload', qrPayload)
       .single();
 
-    if (fetchResult.error || !fetchResult.data) {
+    if (error || !attendee) {
       return NextResponse.json(
         { success: false, error: 'Invalid ticket' },
         { status: 404 }
       );
     }
-
-    const attendee = fetchResult.data;
 
     let updateData = {
       updated_at: new Date().toISOString(),
@@ -50,47 +48,53 @@ export async function POST(request) {
 
     let scanType = '';
 
-    // 2️⃣ Decide action by status
-    if (attendee.status === 'not_checked_in') {
+    // 2️⃣ STATUS-BASED ACTION (RE-ENTRY ENABLED)
+    if (attendee.status === 'not_checked_in' || attendee.status === 'checked_out') {
+      // ✅ CHECK IN (first time or re-entry)
       updateData.status = 'checked_in';
       updateData.check_in_time = new Date().toISOString();
       updateData.check_out_time = null;
       scanType = 'check_in';
+
     } else if (attendee.status === 'checked_in') {
+      // ✅ CHECK OUT
       updateData.status = 'checked_out';
       updateData.check_out_time = new Date().toISOString();
       scanType = 'check_out';
-    } else {
-      return NextResponse.json(
-        { success: false, error: 'Ticket already checked out' },
-        { status: 409 }
-      );
     }
 
     // 3️⃣ Update attendee
-    const updateResult = await supabase
+    const { data: updatedAttendee, error: updateError } = await supabase
       .from('attendees')
       .update(updateData)
       .eq('id', attendee.id)
       .select()
       .single();
 
-    if (updateResult.error) {
+    if (updateError) {
       return NextResponse.json(
-        { success: false, error: updateResult.error.message },
+        { success: false, error: updateError.message },
         { status: 400 }
       );
     }
 
-    // 4️⃣ Log scan (non-fatal)
-    await supabase.from('scan_logs').insert({
-      attendee_id: attendee.id,
-      scan_type: scanType,
-      device_id: deviceId,
-      operator_name: operatorName
-    });
+    // 4️⃣ INSERT SCAN LOG (VISIBLE FOR BOTH IN & OUT)
+    const { data: scanLog, error: logError } = await supabase
+      .from('scan_logs')
+      .insert({
+        attendee_id: attendee.id,
+        scan_type: scanType,
+        device_id: deviceId,
+        operator_name: operatorName
+      })
+      .select()
+      .single();
 
-    // 5️⃣ Refresh stats (safe)
+    if (logError) {
+      console.warn('Scan log insert failed:', logError.message);
+    }
+
+    // 5️⃣ Refresh stats (non-blocking)
     try {
       await supabase.rpc('refresh_attendees_stats');
     } catch (_) {}
@@ -98,7 +102,8 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       action: scanType,
-      attendee: updateResult.data
+      attendee: updatedAttendee,
+      scanLog: scanLog
     });
 
   } catch (error) {
