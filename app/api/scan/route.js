@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 
 export async function POST(request) {
   try {
-    // 🔐 Environment variables (server-only)
+    // 🔐 Environment variables
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -13,13 +13,15 @@ export async function POST(request) {
       throw new Error('Supabase environment variables are missing');
     }
 
-    // ✅ Create Supabase client INSIDE handler (build-safe)
+    // ✅ Create Supabase client (build-safe)
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     const body = await request.json();
     const qrPayload = body.qrPayload;
     const deviceId = body.deviceId || null;
     const operatorName = body.operatorName || null;
+    const intent = body.intent || 'auto'; 
+    // intent can be: 'entry' | 'exit' | 'auto'
 
     if (!qrPayload) {
       return NextResponse.json(
@@ -51,36 +53,49 @@ export async function POST(request) {
     let scanType = null;
 
     /**
-     * 🎯 STRICT ACCESS RULES
+     * 🔒 STRICT ACCESS RULES
      *
      * not_checked_in → check_in
-     * checked_in     → check_out
-     * checked_out    → check_in (re-entry)
-     *
-     * ❌ checked_in → check_in (refused automatically)
+     * checked_in     → ❌ refuse entry
+     * checked_in + intent=exit → check_out
+     * checked_out    → check_in
      */
 
+    // FIRST ENTRY
     if (attendee.status === 'not_checked_in') {
-      // ✅ First entry
       updateData.status = 'checked_in';
       updateData.check_in_time = new Date().toISOString();
       updateData.check_out_time = null;
       scanType = 'check_in';
+    }
 
-    } else if (attendee.status === 'checked_in') {
-      // ✅ Exit
+    // INSIDE → ENTRY ATTEMPT (REFUSE)
+    else if (attendee.status === 'checked_in' && intent !== 'exit') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Ticket already inside. Entry denied.'
+        },
+        { status: 403 }
+      );
+    }
+
+    // INTENTIONAL EXIT
+    else if (attendee.status === 'checked_in' && intent === 'exit') {
       updateData.status = 'checked_out';
       updateData.check_out_time = new Date().toISOString();
       scanType = 'check_out';
+    }
 
-    } else if (attendee.status === 'checked_out') {
-      // ✅ Re-entry
+    // RE-ENTRY AFTER EXIT
+    else if (attendee.status === 'checked_out') {
       updateData.status = 'checked_in';
       updateData.check_in_time = new Date().toISOString();
       updateData.check_out_time = null;
       scanType = 'check_in';
+    }
 
-    } else {
+    else {
       return NextResponse.json(
         { success: false, error: 'Invalid ticket state' },
         { status: 400 }
@@ -102,33 +117,23 @@ export async function POST(request) {
       );
     }
 
-    // 3️⃣ Insert scan log (ALWAYS)
-    const { data: scanLog, error: logError } = await supabase
-      .from('scan_logs')
-      .insert({
-        attendee_id: attendee.id,
-        scan_type: scanType,
-        device_id: deviceId,
-        operator_name: operatorName
-      })
-      .select()
-      .single();
-
-    if (logError) {
-      console.warn('Scan log failed:', logError.message);
-    }
+    // 3️⃣ Log scan (always)
+    await supabase.from('scan_logs').insert({
+      attendee_id: attendee.id,
+      scan_type: scanType,
+      device_id: deviceId,
+      operator_name: operatorName
+    });
 
     // 4️⃣ Refresh stats (non-blocking)
     try {
       await supabase.rpc('refresh_attendees_stats');
     } catch (_) {}
 
-    // 5️⃣ Final response
     return NextResponse.json({
       success: true,
       action: scanType,
-      attendee: updatedAttendee,
-      scanLog: scanLog
+      attendee: updatedAttendee
     });
 
   } catch (error) {
