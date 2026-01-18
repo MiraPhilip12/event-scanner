@@ -3,11 +3,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// ⏱️ Minimum seconds between check-in and checkout
-const CHECKOUT_COOLDOWN_SECONDS = 10;
-
 export async function POST(request) {
   try {
+    // 🔐 Environment variables
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -19,12 +17,20 @@ export async function POST(request) {
 
     const body = await request.json();
     const qrPayload = body.qrPayload;
+    const mode = body.mode; // 🔥 REQUIRED: "check_in" | "check_out"
     const deviceId = body.deviceId || null;
     const operatorName = body.operatorName || null;
 
-    if (!qrPayload) {
+    if (!qrPayload || !mode) {
       return NextResponse.json(
-        { success: false, error: 'QR payload is required' },
+        { success: false, error: 'QR payload and mode are required' },
+        { status: 400 }
+      );
+    }
+
+    if (!['check_in', 'check_out'].includes(mode)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid scan mode' },
         { status: 400 }
       );
     }
@@ -43,35 +49,21 @@ export async function POST(request) {
       );
     }
 
-    const now = new Date();
-    let scanType = null;
+    const now = new Date().toISOString();
 
     let updateData = {
-      updated_at: now.toISOString(),
+      updated_at: now,
       device_id: deviceId,
       last_scanned_by: operatorName
     };
 
-    /**
-     * 🎯 FINAL STATE MACHINE (NO INTENT REQUIRED)
-     */
+    let scanType = null;
 
-    // FIRST ENTRY
-    if (attendee.status === 'not_checked_in') {
-      updateData.status = 'checked_in';
-      updateData.check_in_time = now.toISOString();
-      updateData.check_out_time = null;
-      scanType = 'check_in';
-    }
-
-    // INSIDE → POSSIBLE FRAUD OR EXIT
-    else if (attendee.status === 'checked_in') {
-      const lastCheckIn = new Date(attendee.check_in_time);
-      const secondsSinceCheckIn =
-        (now.getTime() - lastCheckIn.getTime()) / 1000;
-
-      // 🚫 Too fast → ticket sharing attempt
-      if (secondsSinceCheckIn < CHECKOUT_COOLDOWN_SECONDS) {
+    // =========================
+    // 🔒 CHECK-IN TAB LOGIC
+    // =========================
+    if (mode === 'check_in') {
+      if (attendee.status === 'checked_in') {
         return NextResponse.json(
           {
             success: false,
@@ -81,25 +73,34 @@ export async function POST(request) {
         );
       }
 
-      // ✅ Legitimate exit
-      updateData.status = 'checked_out';
-      updateData.check_out_time = now.toISOString();
-      scanType = 'check_out';
-    }
-
-    // RE-ENTRY
-    else if (attendee.status === 'checked_out') {
+      // not_checked_in OR checked_out → allow entry
       updateData.status = 'checked_in';
-      updateData.check_in_time = now.toISOString();
+      updateData.check_in_time = now;
       updateData.check_out_time = null;
       scanType = 'check_in';
     }
 
-    else {
-      return NextResponse.json(
-        { success: false, error: 'Invalid ticket state' },
-        { status: 400 }
-      );
+    // =========================
+    // 🚪 CHECK-OUT TAB LOGIC
+    // =========================
+    if (mode === 'check_out') {
+      if (attendee.status !== 'checked_in') {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              attendee.status === 'checked_out'
+                ? 'Ticket already checked out.'
+                : 'Ticket has not been checked in yet.'
+          },
+          { status: 403 }
+        );
+      }
+
+      // checked_in → allow exit
+      updateData.status = 'checked_out';
+      updateData.check_out_time = now;
+      scanType = 'check_out';
     }
 
     // 2️⃣ Update attendee
@@ -117,13 +118,21 @@ export async function POST(request) {
       );
     }
 
-    // 3️⃣ Log scan (always)
-    await supabase.from('scan_logs').insert({
-      attendee_id: attendee.id,
-      scan_type: scanType,
-      device_id: deviceId,
-      operator_name: operatorName
-    });
+    // 3️⃣ Insert scan log (CRITICAL FOR RECENT SCANS)
+    const { data: scanLog, error: logError } = await supabase
+      .from('scan_logs')
+      .insert({
+        attendee_id: attendee.id,
+        scan_type: scanType, // ✅ check_in OR check_out
+        device_id: deviceId,
+        operator_name: operatorName
+      })
+      .select()
+      .single();
+
+    if (logError) {
+      console.warn('Scan log insert failed:', logError.message);
+    }
 
     // 4️⃣ Refresh stats (non-blocking)
     try {
@@ -133,7 +142,12 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       action: scanType,
-      attendee: updatedAttendee
+      message:
+        scanType === 'check_in'
+          ? `${updatedAttendee.name} checked in successfully`
+          : `${updatedAttendee.name} checked out successfully`,
+      attendee: updatedAttendee,
+      scanLog
     });
 
   } catch (error) {
