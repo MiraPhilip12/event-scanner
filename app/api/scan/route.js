@@ -3,9 +3,11 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+// ⏱️ Minimum seconds between check-in and checkout
+const CHECKOUT_COOLDOWN_SECONDS = 10;
+
 export async function POST(request) {
   try {
-    // 🔐 Environment variables
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -13,15 +15,12 @@ export async function POST(request) {
       throw new Error('Supabase environment variables are missing');
     }
 
-    // ✅ Create Supabase client (build-safe)
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     const body = await request.json();
     const qrPayload = body.qrPayload;
     const deviceId = body.deviceId || null;
     const operatorName = body.operatorName || null;
-    const intent = body.intent || 'auto'; 
-    // intent can be: 'entry' | 'exit' | 'auto'
 
     if (!qrPayload) {
       return NextResponse.json(
@@ -44,53 +43,54 @@ export async function POST(request) {
       );
     }
 
+    const now = new Date();
+    let scanType = null;
+
     let updateData = {
-      updated_at: new Date().toISOString(),
+      updated_at: now.toISOString(),
       device_id: deviceId,
       last_scanned_by: operatorName
     };
 
-    let scanType = null;
-
     /**
-     * 🔒 STRICT ACCESS RULES
-     *
-     * not_checked_in → check_in
-     * checked_in     → ❌ refuse entry
-     * checked_in + intent=exit → check_out
-     * checked_out    → check_in
+     * 🎯 FINAL STATE MACHINE (NO INTENT REQUIRED)
      */
 
     // FIRST ENTRY
     if (attendee.status === 'not_checked_in') {
       updateData.status = 'checked_in';
-      updateData.check_in_time = new Date().toISOString();
+      updateData.check_in_time = now.toISOString();
       updateData.check_out_time = null;
       scanType = 'check_in';
     }
 
-    // INSIDE → ENTRY ATTEMPT (REFUSE)
-    else if (attendee.status === 'checked_in' && intent !== 'exit') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Ticket already inside. Entry denied.'
-        },
-        { status: 403 }
-      );
-    }
+    // INSIDE → POSSIBLE FRAUD OR EXIT
+    else if (attendee.status === 'checked_in') {
+      const lastCheckIn = new Date(attendee.check_in_time);
+      const secondsSinceCheckIn =
+        (now.getTime() - lastCheckIn.getTime()) / 1000;
 
-    // INTENTIONAL EXIT
-    else if (attendee.status === 'checked_in' && intent === 'exit') {
+      // 🚫 Too fast → ticket sharing attempt
+      if (secondsSinceCheckIn < CHECKOUT_COOLDOWN_SECONDS) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Ticket already inside. Entry denied.'
+          },
+          { status: 403 }
+        );
+      }
+
+      // ✅ Legitimate exit
       updateData.status = 'checked_out';
-      updateData.check_out_time = new Date().toISOString();
+      updateData.check_out_time = now.toISOString();
       scanType = 'check_out';
     }
 
-    // RE-ENTRY AFTER EXIT
+    // RE-ENTRY
     else if (attendee.status === 'checked_out') {
       updateData.status = 'checked_in';
-      updateData.check_in_time = new Date().toISOString();
+      updateData.check_in_time = now.toISOString();
       updateData.check_out_time = null;
       scanType = 'check_in';
     }
