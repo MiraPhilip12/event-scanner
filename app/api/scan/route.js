@@ -3,9 +3,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// ⏱️ Minimum seconds between check-in and checkout
-const CHECKOUT_COOLDOWN_SECONDS = 10;
-
 export async function POST(request) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -19,17 +16,24 @@ export async function POST(request) {
 
     const body = await request.json();
     const qrPayload = body.qrPayload;
+    const mode = body.mode;
     const deviceId = body.deviceId || null;
     const operatorName = body.operatorName || null;
 
-    if (!qrPayload) {
+    if (!qrPayload || !mode) {
       return NextResponse.json(
-        { success: false, error: 'QR payload is required' },
+        { success: false, error: 'QR payload and mode are required' },
         { status: 400 }
       );
     }
 
-    // 1️⃣ Fetch attendee
+    if (!['check_in', 'check_out'].includes(mode)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid scan mode' },
+        { status: 400 }
+      );
+    }
+
     const { data: attendee, error: fetchError } = await supabase
       .from('attendees')
       .select('*')
@@ -43,66 +47,49 @@ export async function POST(request) {
       );
     }
 
-    const now = new Date();
-    let scanType = null;
+    const now = new Date().toISOString();
 
     let updateData = {
-      updated_at: now.toISOString(),
+      updated_at: now,
       device_id: deviceId,
       last_scanned_by: operatorName
     };
 
-    /**
-     * 🎯 FINAL STATE MACHINE (NO INTENT REQUIRED)
-     */
+    let scanType = null;
 
-    // FIRST ENTRY
-    if (attendee.status === 'not_checked_in') {
+    if (mode === 'check_in') {
+      if (attendee.status === 'checked_in') {
+        return NextResponse.json(
+          { success: false, error: 'Ticket already inside. Entry denied.' },
+          { status: 403 }
+        );
+      }
+
       updateData.status = 'checked_in';
-      updateData.check_in_time = now.toISOString();
+      updateData.check_in_time = now;
       updateData.check_out_time = null;
       scanType = 'check_in';
     }
 
-    // INSIDE → POSSIBLE FRAUD OR EXIT
-    else if (attendee.status === 'checked_in') {
-      const lastCheckIn = new Date(attendee.check_in_time);
-      const secondsSinceCheckIn =
-        (now.getTime() - lastCheckIn.getTime()) / 1000;
-
-      // 🚫 Too fast → ticket sharing attempt
-      if (secondsSinceCheckIn < CHECKOUT_COOLDOWN_SECONDS) {
+    else if (mode === 'check_out') {
+      if (attendee.status !== 'checked_in') {
         return NextResponse.json(
           {
             success: false,
-            error: 'Ticket already inside. Entry denied.'
+            error:
+              attendee.status === 'checked_out'
+                ? 'Ticket already checked out.'
+                : 'Ticket has not been checked in yet.'
           },
           { status: 403 }
         );
       }
 
-      // ✅ Legitimate exit
       updateData.status = 'checked_out';
-      updateData.check_out_time = now.toISOString();
+      updateData.check_out_time = now;
       scanType = 'check_out';
     }
 
-    // RE-ENTRY
-    else if (attendee.status === 'checked_out') {
-      updateData.status = 'checked_in';
-      updateData.check_in_time = now.toISOString();
-      updateData.check_out_time = null;
-      scanType = 'check_in';
-    }
-
-    else {
-      return NextResponse.json(
-        { success: false, error: 'Invalid ticket state' },
-        { status: 400 }
-      );
-    }
-
-    // 2️⃣ Update attendee
     const { data: updatedAttendee, error: updateError } = await supabase
       .from('attendees')
       .update(updateData)
@@ -117,7 +104,6 @@ export async function POST(request) {
       );
     }
 
-    // 3️⃣ Log scan (always)
     await supabase.from('scan_logs').insert({
       attendee_id: attendee.id,
       scan_type: scanType,
@@ -125,7 +111,6 @@ export async function POST(request) {
       operator_name: operatorName
     });
 
-    // 4️⃣ Refresh stats (non-blocking)
     try {
       await supabase.rpc('refresh_attendees_stats');
     } catch (_) {}
