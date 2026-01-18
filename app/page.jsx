@@ -5,7 +5,7 @@ import { Html5QrcodeScanner } from 'html5-qrcode';
 import { Toaster, toast } from 'react-hot-toast';
 
 export default function Home() {
-  const [scanType, setScanType] = useState('check_in');
+  const [mode, setMode] = useState('check_in');
   const [recentScans, setRecentScans] = useState([]);
   const [stats, setStats] = useState({ 
     total: 0, 
@@ -108,10 +108,11 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           qrPayload: decodedText.trim(),
-          scanType,
+          mode,
           deviceId: deviceId.current,
-          operator: 'Operator'
+          operatorName: 'Operator'
         })
+
       });
       
       const data = await response.json();
@@ -128,7 +129,7 @@ export default function Home() {
           seat_id: data.attendee.seat_id,
           category: data.attendee.category,
           status: data.attendee.status,
-          scanType: scanType,
+          scanType: data.action,
           timestamp: new Date().toISOString(),
           last_scanned_by: data.attendee.last_scanned_by
         };
@@ -453,7 +454,7 @@ export default function Home() {
               borderRadius: '10px'
             }}>
               <button
-                onClick={() => setScanType('check_in')}
+                onClick={() => setMode('check_in')}
                 style={{
                   flex: 1,
                   padding: '18px',
@@ -472,7 +473,7 @@ export default function Home() {
                 ✓ CHECK IN
               </button>
               <button
-                onClick={() => setScanType('check_out')}
+                onClick={() => setMode('check_out')}
                 style={{
                   flex: 1,
                   padding: '18px',
