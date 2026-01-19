@@ -15,32 +15,35 @@ export async function POST(request) {
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     const body = await request.json();
+
     const qrPayload = body.qrPayload;
-    const mode = body.mode;
+    const mode = body.mode; // MUST be 'check_in' or 'check_out'
     const deviceId = body.deviceId || null;
     const operatorName = body.operatorName || null;
 
-    if (!qrPayload || !mode) {
+    // 🔒 HARD VALIDATION
+    if (!qrPayload) {
       return NextResponse.json(
-        { success: false, error: 'QR payload and mode are required' },
+        { success: false, error: 'QR payload is required' },
         { status: 400 }
       );
     }
 
-    if (!['check_in', 'check_out'].includes(mode)) {
+    if (mode !== 'check_in' && mode !== 'check_out') {
       return NextResponse.json(
-        { success: false, error: 'Invalid scan mode' },
+        { success: false, error: 'Invalid or missing scan mode' },
         { status: 400 }
       );
     }
 
-    const { data: attendee, error: fetchError } = await supabase
+    // Fetch attendee
+    const { data: attendee, error } = await supabase
       .from('attendees')
       .select('*')
       .eq('qr_payload', qrPayload)
       .single();
 
-    if (fetchError || !attendee) {
+    if (error || !attendee) {
       return NextResponse.json(
         { success: false, error: 'Invalid ticket' },
         { status: 404 }
@@ -57,7 +60,12 @@ export async function POST(request) {
 
     let scanType = null;
 
+    // ==================================================
+    // 🔐 ABSOLUTE MODE LOCK (NO AUTO TOGGLE POSSIBLE)
+    // ==================================================
+
     if (mode === 'check_in') {
+      // ❌ If already inside → refuse
       if (attendee.status === 'checked_in') {
         return NextResponse.json(
           { success: false, error: 'Ticket already inside. Entry denied.' },
@@ -65,13 +73,15 @@ export async function POST(request) {
         );
       }
 
+      // ✅ Allow entry ONLY here
       updateData.status = 'checked_in';
       updateData.check_in_time = now;
       updateData.check_out_time = null;
       scanType = 'check_in';
     }
 
-    else if (mode === 'check_out') {
+    if (mode === 'check_out') {
+      // ❌ HARD BLOCK: check-out can NEVER check in
       if (attendee.status !== 'checked_in') {
         return NextResponse.json(
           {
@@ -85,11 +95,24 @@ export async function POST(request) {
         );
       }
 
+      // ✅ Exit ONLY here
       updateData.status = 'checked_out';
       updateData.check_out_time = now;
       scanType = 'check_out';
     }
 
+    // 🔥 FINAL SAFETY ASSERTION
+    if (
+      (mode === 'check_out' && scanType !== 'check_out') ||
+      (mode === 'check_in' && scanType !== 'check_in')
+    ) {
+      return NextResponse.json(
+        { success: false, error: 'Internal logic violation detected' },
+        { status: 500 }
+      );
+    }
+
+    // Update attendee
     const { data: updatedAttendee, error: updateError } = await supabase
       .from('attendees')
       .update(updateData)
@@ -104,16 +127,13 @@ export async function POST(request) {
       );
     }
 
+    // Log scan
     await supabase.from('scan_logs').insert({
       attendee_id: attendee.id,
       scan_type: scanType,
       device_id: deviceId,
       operator_name: operatorName
     });
-
-    try {
-      await supabase.rpc('refresh_attendees_stats');
-    } catch (_) {}
 
     return NextResponse.json({
       success: true,
